@@ -1,7 +1,7 @@
 import cv2, sys, math, numpy as np
 from multiprocessing.connection import Client
 
-SEND_EVERY = 2
+SEND_EVERY = 3
 MAX_MISS = 10
 DIST_COEF = 3.5
 F_PX = 500
@@ -37,6 +37,33 @@ def merge(rs):
         out.append((rx, ry, rw, rh))
     return out
 
+def process_frame(frame, balls, idx_counter):
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, LOWER, UPPER)
+    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    rects = merge([cv2.boundingRect(c) for c in cnts if cv2.contourArea(c) > 800])
+
+    for x, y, w, h in rects:
+        cx = x + w // 2
+        cy = y + h // 2
+        thr = max(w, h) * DIST_COEF
+        best, best_d = None, thr
+        for b in balls:
+            d = math.hypot(b.cx - cx, b.cy - cy)
+            if d < best_d:
+                best = b
+                best_d = d
+        if best:
+            best.cx = cx
+            best.cy = cy
+            best.rect = (x, y, w, h)
+            best.miss = 0
+        else:
+            balls.append(Ball(idx_counter, cx, cy, (x, y, w, h)))
+            idx_counter += 1
+
+    return [b for b in balls if b.miss <= MAX_MISS], idx_counter
+
 def main():
     if len(sys.argv)<7:
         print("python worker.py host:port authkey x y z r"); return
@@ -56,41 +83,17 @@ def main():
 
     try:
         while True:
-            ok,frame = cam.read()
+            ok, frame = cam.read()
             if not ok: break
-            frame = cv2.flip(frame, 1)
 
             for b in balls: b.miss += 1
 
-            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-            mask = cv2.inRange(hsv, LOWER, UPPER)
-            cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            rects = merge([cv2.boundingRect(c) for c in cnts if cv2.contourArea(c) > 800])
-
-            for x, y, w, h in rects:
-                cx = x + w // 2
-                cy = y + h // 2
-                thr = max(w, h) * DIST_COEF
-                best, best_d = None, thr
-                for b in balls:
-                    d = math.hypot(b.cx - cx, b.cy - cy)
-                    if d < best_d:
-                        best = b
-                        best_d = d
-                if best:
-                    best.cx = cx
-                    best.cy = cy
-                    best.rect = (x, y, w, h)
-                    best.miss = 0
-                else:
-                    balls.append(Ball(idx_counter, cx, cy, (x, y, w, h)))
-                    idx_counter += 1
-
-            balls=[b for b in balls if b.miss <= MAX_MISS]
-
+            frame = cv2.flip(frame, 1)
+            balls, idx_counter = process_frame(frame, balls, idx_counter)
             h_img, w_img = frame.shape[:2]
             cx0 = w_img // 2
             cy0 = h_img // 2
+
             for b in balls:
                 x, y, w, h = b.rect
                 scale = REAL_CM / max(w, h)
@@ -102,7 +105,7 @@ def main():
                 b.z = -X * sr + Z * cr + z_cam
 
             frame_idx += 1
-            if frame_idx%SEND_EVERY == 0:
+            if frame_idx % SEND_EVERY == 0:
                 pkt = [b for b in balls]
                 try:
                     conn.send(pkt)
