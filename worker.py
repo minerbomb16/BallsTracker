@@ -1,22 +1,35 @@
 import cv2, sys, math, numpy as np
-import zmq
 from multiprocessing.connection import Client
+from shared_classes import Message
 
 SEND_EVERY = 2
 MAX_MISS = 10
-DIST_COEF = 5
+DIST_COEF = 10
 F_PX = 500
 REAL_CM = 6.0
-LOWER = np.array([20,40,80])
-UPPER = np.array([50,255,255])
+LOWER = np.array([20, 40, 80])
+UPPER = np.array([50, 255, 255])
+
+
+idx = 0
+
+
+def new_idx():
+    global idx
+    idx += 1
+    return idx
+
 
 def merge(rects):
-    merged, used = [], [False]*len(rects)
+    merged = []
+    used = [False] * len(rects)
     for i, (x, y, w, h) in enumerate(rects):
-        if used[i]: continue
+        if used[i]:
+            continue
         rx, ry, rw, rh = x, y, w, h
         for j in range(i + 1, len(rects)):
-            if used[j]: continue
+            if used[j]:
+                continue
             x2, y2, w2, h2 = rects[j]
             if not (rx + rw < x2 or x2 + w2 < rx or ry + rh < y2 or y2 + h2 < ry):
                 rx = min(rx, x2)
@@ -24,23 +37,86 @@ def merge(rects):
                 rw = max(rx + rw, x2 + w2) - rx
                 rh = max(ry + rh, y2 + h2) - ry
                 used[j] = True
-        used[i]=True
+        used[i] = True
         merged.append((rx, ry, rw, rh))
     return merged
 
 
 class Ball:
-    def __init__(s, cx, cy, rect):
-        s.cx = cx
-        s.cy = cy
-        s.rect = rect
-        s.miss = 0
-        s.label = '?'
-        s.X = s.Y = s.Z = 0.0
+    def __init__(self, cx, cy, width, height, x, y, z):
+        self.cx = cx
+        self.cy = cy
+        self.w = width
+        self.h = height
+        self.miss = 0
+        self.label = '?'
+        self.x = x
+        self.y = y
+        self.z = z
+
+
+def find_balls_on_frame(frame, cr, sr):
+    balls = []
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, LOWER, UPPER)
+    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    rects = merge([cv2.boundingRect(c) for c in cnts if cv2.contourArea(c) > 800])
+    for x, y, w, h in rects:
+        cx = x + w // 2
+        cy = y + h // 2
+
+        h_img, w_img = frame.shape[:2]
+        cx0 = w_img // 2
+        cy0 = h_img // 2
+        scale = REAL_CM / max(w, h)
+
+        Z_cam = scale * F_PX
+        X_cam = (cx0 - cx) * scale
+        Y_cam = (cy0 - cy) * scale
+
+        x = X_cam * cr + Z_cam * sr + x_cam
+        y = Y_cam + y_cam
+        z = -X_cam * sr + Z_cam * cr + z_cam
+        balls.append(Ball(cx, cy, w, h, x, y, z))
+    return balls
+
+
+def find_common_balls(prev_balls, new_balls):
+    res = []
+    used = set()
+    for n_ball in new_balls:
+        thr = max(n_ball.w, n_ball.h) * DIST_COEF
+        closest_dist = thr
+        closest_ball = None
+        for p_ball in prev_balls:
+            if p_ball.index in used:
+                continue
+            d = math.hypot(n_ball.cx - p_ball.cx, n_ball.cy - p_ball.cy)
+            if d < closest_dist:
+                closest_dist = d
+                closest_ball = p_ball
+        if closest_ball:
+            used.add(closest_ball.index)
+            n_ball.index = closest_ball.index
+        else:
+            n_ball.index = new_idx()
+        res.append(n_ball)
+    return res
+
+
+def send_balls(balls, conn):
+    msg = Message(balls)
+    conn.send(msg)
+
+
+# returns a dictionary with ball idx as keys and labels as values
+def receive_labels(conn):
+    labels = conn.recv()
+    print(labels)
+    return labels
 
 
 def process_frame(frame, balls):
-    # frame = cv2.flip(frame, 1)
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     mask = cv2.inRange(hsv, LOWER, UPPER)
     cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -66,8 +142,20 @@ def process_frame(frame, balls):
     return balls
 
 
-def send_balls():
-    pass
+def draw_rects(frame, balls, labels):
+    for b in balls:
+        label = labels[b.index] if b.index in labels else '?'
+        red = (0, 0, 255)
+        x1 = b.cx - b.w // 2
+        y1 = b.cy - b.h // 2
+        x2 = b.cx + b.w // 2
+        y2 = b.cy + b.h // 2
+        cv2.rectangle(frame, (x1, y1), (x2, y2), red, 2)
+        lines = [label, f"X:{b.x:.1f}", f"Y:{b.y:.1f}", f"Z:{b.z:.1f}"]
+        for i, line in enumerate(lines):
+            cords = x2 + 10, y1 + 20 + i * 25
+            cv2.putText(frame, line, cords, cv2.FONT_HERSHEY_SIMPLEX, 0.6, red, 1)
+    cv2.imshow("Balls", cv2.resize(frame, None, fx=1.5, fy=1.5))
 
 
 def main(host, port, authkey, x_cam, y_cam, z_cam, r):
@@ -75,70 +163,27 @@ def main(host, port, authkey, x_cam, y_cam, z_cam, r):
 
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
-        print("Camera has not been found!")
+        print('Camera has not been found')
         return
 
     balls = []
-    frame_idx = 0
 
     conn = Client((host, port), authkey=authkey)
     print('Estabilished connection')
+
     while True:
         ok, frame = cap.read()
         if not ok:
             break
+        frame = cv2.flip(frame, 1)
 
-        for b in balls:
-            b.miss += 1
-
-        balls = process_frame(frame, balls)
-
-        balls = [b for b in balls if b.miss <= MAX_MISS]
-
-        h_img, w_img = frame.shape[:2]
-        cx0 = w_img // 2
-        cy0 = h_img // 2
-        for b in balls:
-            x, y, w, h = b.rect
-            scale = REAL_CM / max(w, h)
-
-            Z_cam = scale * F_PX
-            X_cam = (cx0 - b.cx) * scale
-            Y_cam = (cy0 - b.cy) * scale
-
-            b.X = X_cam * cr + Z_cam * sr + x_cam
-            b.Y = Y_cam + y_cam
-            b.Z = -X_cam * sr + Z_cam * cr + z_cam
-
-        frame_idx += 1
-        if frame_idx % SEND_EVERY == 0:
-            try:
-                conn.send(balls)
-                print('sent balls')
-                labels = conn.recv()
-                print('received shit')
-                if len(labels) == len(balls):
-                    for b, l in zip(balls, labels):
-                        b.label = l
-            except Exception:
-                print('Not sent')
-                pass
-
-        for b in balls:
-            x, y, w, h = b.rect
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 0, 255), 2)
-            for i, line in enumerate([f"Ball {b.label}",
-                                      f"X:{b.X:.1f}",
-                                      f"Y:{b.Y:.1f}",
-                                      f"Z:{b.Z:.1f}"]):
-                cv2.putText(frame, line, (x + w + 10, y + 20 + i * 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 1)
-        cv2.imshow("Balls", cv2.resize(frame, None, fx=1.5, fy=1.5))
+        new_balls = find_balls_on_frame(frame, cr, sr)
+        balls = find_common_balls(balls, new_balls)
+        send_balls(balls, conn)
+        labels = receive_labels(conn)
+        draw_rects(frame, balls, labels)
         if cv2.waitKey(1) & 0xFF == 27:
             break
-
-    cap.release()
-    cv2.destroyAllWindows()
-    conn.close()
 
 
 if __name__ == "__main__":
