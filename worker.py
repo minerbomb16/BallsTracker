@@ -1,9 +1,10 @@
 import cv2, sys, math, numpy as np
+import zmq
 from multiprocessing.connection import Client
 
 SEND_EVERY = 2
 MAX_MISS = 10
-DIST_COEF = 1.2
+DIST_COEF = 5
 F_PX = 500
 REAL_CM = 6.0
 LOWER = np.array([20,40,80])
@@ -27,6 +28,7 @@ def merge(rects):
         merged.append((rx, ry, rw, rh))
     return merged
 
+
 class Ball:
     def __init__(s, cx, cy, rect):
         s.cx = cx
@@ -36,53 +38,62 @@ class Ball:
         s.label = '?'
         s.X = s.Y = s.Z = 0.0
 
-def main():
-    if len(sys.argv)<7:
-        print("python worker.py host:port authkey x y z r"); return
-    host, port = sys.argv[1].split(':')
-    port=int(port)
-    AUTHKEY = sys.argv[2].encode()
-    x_cam, y_cam, z_cam = map(float, sys.argv[3:6])
-    r = math.radians(float(sys.argv[6]))
+
+def process_frame(frame, balls):
+    # frame = cv2.flip(frame, 1)
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, LOWER, UPPER)
+    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    rects = merge([cv2.boundingRect(c) for c in cnts if cv2.contourArea(c) > 800])
+    for x, y, w, h in rects:
+        cx = x + w // 2
+        cy = y + h // 2
+        thr = max(w, h) * DIST_COEF
+        best = None
+        best_d = thr
+        for b in balls:
+            d = math.hypot(b.cx - cx, b.cy - cy)
+            if d < best_d:
+                best = b
+                best_d = d
+        if best:
+            best.cx = cx
+            best.cy = cy
+            best.rect = (x, y, w, h)
+            best.miss = 0
+        else:
+            balls.append(Ball(cx, cy, (x, y, w, h)))
+    return balls
+
+
+def send_balls():
+    pass
+
+
+def main(host, port, authkey, x_cam, y_cam, z_cam, r):
     cr, sr = math.cos(r), math.sin(r)
 
-    cap=cv2.VideoCapture(0)
-    if not cap.isOpened(): print("kamera?"); return
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        print("Camera has not been found!")
+        return
 
-    balls=[]
-    frame_idx=0
+    balls = []
+    frame_idx = 0
 
+    conn = Client((host, port), authkey=authkey)
+    print('Estabilished connection')
     while True:
         ok, frame = cap.read()
-        if not ok: break
-        frame = cv2.flip(frame, 1)
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        mask = cv2.inRange(hsv, LOWER,UPPER)
-        cnts, _ =cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        rects = merge([cv2.boundingRect(c) for c in cnts if cv2.contourArea(c) > 800])
+        if not ok:
+            break
 
-        for b in balls: b.miss += 1
+        for b in balls:
+            b.miss += 1
 
-        for x, y, w, h in rects:
-            cx = x + w // 2
-            cy = y + h // 2
-            thr = max(w, h) * DIST_COEF
-            best = None
-            best_d = thr
-            for b in balls:
-                d = math.hypot(b.cx - cx, b.cy - cy)
-                if d < best_d:
-                    best = b
-                    best_d = d
-            if best:
-                best.cx = cx
-                best.cy = cy
-                best.rect = (x, y, w, h)
-                best.miss = 0
-            else:
-                balls.append(Ball(cx, cy, (x, y, w, h)))
+        balls = process_frame(frame, balls)
 
-        balls=[b for b in balls if b.miss <= MAX_MISS]
+        balls = [b for b in balls if b.miss <= MAX_MISS]
 
         h_img, w_img = frame.shape[:2]
         cx0 = w_img // 2
@@ -96,19 +107,21 @@ def main():
             Y_cam = (cy0 - b.cy) * scale
 
             b.X = X_cam * cr + Z_cam * sr + x_cam
-            b.Y = -X_cam * sr + Z_cam * cr + z_cam
-            b.Z = Y_cam + y_cam
+            b.Y = Y_cam + y_cam
+            b.Z = -X_cam * sr + Z_cam * cr + z_cam
 
         frame_idx += 1
         if frame_idx % SEND_EVERY == 0:
             try:
-                conn = Client((host, port), authkey = AUTHKEY)
-                conn.send([(b.X, b.Y, b.Z) for b in balls])
+                conn.send(balls)
+                print('sent balls')
                 labels = conn.recv()
-                conn.close()
+                print('received shit')
                 if len(labels) == len(balls):
-                    for b, l in zip(balls, labels): b.label = l
+                    for b, l in zip(balls, labels):
+                        b.label = l
             except Exception:
+                print('Not sent')
                 pass
 
         for b in balls:
@@ -118,11 +131,23 @@ def main():
                                       f"X:{b.X:.1f}",
                                       f"Y:{b.Y:.1f}",
                                       f"Z:{b.Z:.1f}"]):
-                cv2.putText(frame, line, (x + w + 10, y + 20 + i *25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 1)
-        cv2.imshow("Balls", cv2.resize(frame, None, fx = 1.5, fy = 1.5))
-        if cv2.waitKey(1) & 0xFF == 27: break
+                cv2.putText(frame, line, (x + w + 10, y + 20 + i * 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 1)
+        cv2.imshow("Balls", cv2.resize(frame, None, fx=1.5, fy=1.5))
+        if cv2.waitKey(1) & 0xFF == 27:
+            break
 
-    cap.release(); cv2.destroyAllWindows()
+    cap.release()
+    cv2.destroyAllWindows()
+    conn.close()
 
-if __name__=="__main__":
-    main()
+
+if __name__ == "__main__":
+    if len(sys.argv) < 7:
+        print("python worker.py host:port authkey x y z r")
+        exit(-1)
+    host, port_str = sys.argv[1].split(':')
+    port = int(port_str)
+    authkey = sys.argv[2].encode()
+    x_cam, y_cam, z_cam = map(float, sys.argv[3:6])
+    r = math.radians(float(sys.argv[6]))
+    main(host, port, authkey, x_cam, y_cam, z_cam, r)
