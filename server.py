@@ -63,24 +63,27 @@ def serve(conn, label, stop, tracked):
 
 
 def process(msg, tracked, labels):
-    print('Processing')
-    labels_out = dict()
+    labels_out = {}
+
     for r_ball in msg.balls:
-        best = None
-        best_d = POS_THR
+        best_i  = None
+        best_d  = POS_THR
         for i, t_ball in enumerate(tracked):
             d = dist3(r_ball, t_ball)
             if d < best_d:
-                best = i
-                best_d = d
-        if r_ball.index in labels:
-            label = labels[r_ball.index]
-            labels_out[r_ball.index] = label
+                best_i, best_d = i, d
+
+        if best_i is not None:
+            t = tracked[best_i]
+            t.x, t.y, t.z = r_ball.x, r_ball.y, r_ball.z
+            label = t.label
         else:
-            # new ball
-            tracked.append(r_ball)
-            labels_out[r_ball.index] = next_free()
-    print(labels_out)
+            label = next_free()
+            tracked.append(Ball(label, r_ball.x, r_ball.y, r_ball.z))
+
+        labels_out[r_ball.index] = label
+        labels[r_ball.index] = label
+
     return labels_out
 
 
