@@ -1,4 +1,4 @@
-import cv2, sys, math, numpy as np
+import cv2, sys, math, numpy as np, time
 from multiprocessing.connection import Client
 from shared_classes import Message
 
@@ -9,7 +9,8 @@ REAL_CM = 6.0
 LOWER = np.array([20, 40, 80])
 UPPER = np.array([50, 255, 255])
 
-
+R_MM = 33.5
+w, h = 1920, 1080
 idx = 0
 
 
