@@ -2,7 +2,6 @@ import cv2, sys, math, numpy as np
 from multiprocessing.connection import Client
 from shared_classes import Message
 
-SEND_EVERY = 2
 MAX_MISS = 10
 DIST_COEF = 10
 F_PX = 500
@@ -106,6 +105,8 @@ def find_common_balls(prev_balls, new_balls):
 
 def send_balls(balls, conn):
     msg = Message(balls)
+    inds = [b.index for b in balls]
+    print(inds)
     conn.send(msg)
 
 
@@ -158,10 +159,28 @@ def draw_rects(frame, balls, labels):
     cv2.imshow("Balls", cv2.resize(frame, None, fx=1.5, fy=1.5))
 
 
+def get_cam_idx(max_index=10, backend=None):
+    for idx in range(max_index):
+        # try to open the capture device
+        if backend is not None:
+            cap = cv2.VideoCapture(idx, backend)
+        else:
+            cap = cv2.VideoCapture(idx)
+        if not cap.isOpened():
+            cap.release()
+            continue
+        # optional: try to grab a frame to be extra sure
+        ret, _ = cap.read()
+        cap.release()
+        if ret:
+            return idx
+
+
 def main(host, port, authkey, x_cam, y_cam, z_cam, r):
     cr, sr = math.cos(r), math.sin(r)
 
-    cap = cv2.VideoCapture(0)
+    idx = get_cam_idx()
+    cap = cv2.VideoCapture(idx)
     if not cap.isOpened():
         print('Camera has not been found')
         return

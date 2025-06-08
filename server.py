@@ -4,16 +4,91 @@ import math, sys, socket
 import time
 import threading
 
-POS_THR = 10.0
 MAX_MISS = 20
 START_L = ord('A')
 END_L = ord('Z')
 curr_label = ord('A')
-labels = []
+labels = dict()
+labels_lock = threading.Lock()
 
 
-def label_balls(balls):
-    pass
+class Label:
+    def __init__(self, x, y, z, client):
+        self.x = x
+        self.y = y
+        self.z = z
+        self.clients = set()
+        self.clients.add(client)
+
+    def update_pos(self, ball):
+        self.x = ball.x
+        self.y = ball.y
+        self.z = ball.z
+
+    def add_client(self, client):
+        if client not in self.clients:
+            self.clients.add(client)
+
+    def remove_client(self, client):
+        if client in self.clients:
+            self.clients.remove(client)
+
+    def client_count(self):
+        return len(self.clients)
+
+
+def label_balls(balls, client: str):
+    labels_lock.acquire()
+    ind_labs = dict()
+
+    found_labels: dict[str, float] = dict()
+    for ball in balls:
+        closest_dist = math.inf
+        closest_label = None
+        for lab in labels.keys():
+            label = labels[lab]
+            d = dist3(ball, label)
+            if d < closest_dist:
+                if lab not in found_labels or found_labels[lab] > d:
+                    if lab in found_labels:
+                        ind_labs = {i : l for i, l in ind_labs.items() if l != lab}
+                    closest_label = lab
+                    closest_dist = d
+                    found_labels[lab] = d
+                        
+        if closest_label:
+            ind_labs[ball.index] = closest_label
+            label = labels[closest_label]
+            label.update_pos(ball)
+        else:
+            new_l = next_free()
+            labels[new_l] = Label(ball.x, ball.y, ball.z, client)
+            ind_labs[ball.index] = new_l
+            found_labels[new_l] = 0
+
+    to_delete = set()
+    for lab in labels.keys():
+        if lab in found_labels:
+            continue
+        else:
+            label = labels[lab]
+            label.remove_client(client)
+            if label.client_count() == 0:
+                to_delete.add(lab)
+    for lab in to_delete:
+        labels.pop(lab)
+
+    for idx, lab in ind_labs.items():
+        ball = next(b for b in balls if b.index == idx)
+        label = labels[lab]
+        label.update_pos(ball)
+
+    print(labels.keys())
+    for lab in labels.keys():
+        label = labels[lab]
+        print(f'{lab}: {label.client_count()}')
+    labels_lock.release()
+    return ind_labs
 
 
 class Ball:
@@ -32,8 +107,8 @@ def next_free():
     return c
 
 
-def dist3(b1, b2):
-    return math.sqrt((b1.x - b2.x)**2 + (b1.y - b2.y)**2 + (b1.z - b2.z)**2)
+def dist3(b, label):
+    return math.sqrt((b.x - label.x)**2 + (b.y - label.y)**2 + (b.z - label.z)**2)
 
 
 def listen_on_connections(host, port, key, conn_threads, stop, tracked):
@@ -44,20 +119,20 @@ def listen_on_connections(host, port, key, conn_threads, stop, tracked):
     while not stop:
         conn = listener.accept()
         print('Estabilished connection')
-        label = f'client {conn_id}'
+        client = f'client {conn_id}'
         conn_id += 1
-        new_t = threading.Thread(target=serve, args=(conn, label, stop, tracked))
+        new_t = threading.Thread(target=serve, args=(conn, client, stop))
         new_t.start()
         conn_threads.append(new_t)
     listener.close()
 
 
-def serve(conn, label, stop, tracked):
-    print(f'Spawned thread for {label}')
+def serve(conn, client, stop):
+    print(f'Spawned thread for {client}')
     labels = dict()
     while not stop:
         message = conn.recv()
-        labels = process(message, tracked, labels)
+        labels = label_balls(message.balls, client)
         conn.send(labels)
     conn.close()
 
