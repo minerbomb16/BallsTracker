@@ -1,100 +1,139 @@
-import math, sys, socket
 from multiprocessing.connection import Listener
-import time
-import threading
+from shared_classes import Ball, Message
+import math, sys, socket, time, threading
 
-POS_THR = 10.0
-MAX_MISS = 20
+MAX_LABEL_DIST = 15.0 
 START_L = ord('A')
 END_L = ord('Z')
+curr_label = ord('A')
+labels = dict()
+labels_lock = threading.Lock()
 
 
-class Ball:
-    def __init__(self, label, x, y, z):
-        self.label = label
-        self.x, self.y, self.z = x, y, z
-        self.miss = 0
+class Label:
+    def __init__(self, x, y, z, client):
+        self.x = x
+        self.y = y
+        self.z = z
+        self.clients = set()
+        self.clients.add(client)
+
+    def update_pos(self, ball):
+        self.x = ball.x
+        self.y = ball.y
+        self.z = ball.z
+
+    def add_client(self, client):
+        if client not in self.clients:
+            self.clients.add(client)
+
+    def remove_client(self, client):
+        if client in self.clients:
+            self.clients.remove(client)
+
+    def client_count(self):
+        return len(self.clients)
 
 
-def next_free(tracked):
-    used = {b.label for b in tracked}
-    for c in range(START_L, END_L + 1):
-        if chr(c) not in used:
-            return chr(c)
-    return '?'
+def label_balls(balls, client: str):
+    ind_labs: dict[int, str] = {}
+
+    with labels_lock:
+        matched: set[str] = set()
+
+        for ball in balls:
+            closest_label = None
+            closest_dist = MAX_LABEL_DIST
+
+            for lab, lab_obj in labels.items():
+                d = dist3(ball, lab_obj)
+                if d < closest_dist:
+                    closest_dist = d
+                    closest_label = lab
+
+            if closest_label is not None:
+                ind_labs[ball.index] = closest_label
+                label_obj = labels[closest_label]
+                label_obj.update_pos(ball)
+                label_obj.add_client(client)
+                matched.add(closest_label)
+            else:
+                new_lab = next_free()
+                labels[new_lab] = Label(ball.x, ball.y, ball.z, client)
+                ind_labs[ball.index] = new_lab
+                matched.add(new_lab)
+
+        to_delete = []
+        for lab, lab_obj in labels.items():
+            if lab not in matched:
+                lab_obj.remove_client(client)
+                if lab_obj.client_count() == 0:
+                    to_delete.append(lab)
+
+        for lab in to_delete:
+            labels.pop(lab)
+
+    return ind_labs
 
 
-def dist3(b1, b2):
-    return math.sqrt((b1.x - b2.x) ** 2 + (b1.y - b2.y) ** 2 + (b1.z - b2.z) ** 2)
+def next_free():
+    global curr_label
+    c = chr(curr_label)
+    curr_label += 1
+    if curr_label > END_L:
+        curr_label = START_L
+    return c
 
 
-def listen_on_connections(host, port, key, conn_threads, stop, tracked):
-    conn_id = 0
-    listener = Listener((host, port), authkey=key)
-    # listener._listener._socket.settimeout(1.0)
+def dist3(b, label):
+    return math.sqrt((b.x - label.x)**2 + (b.y - label.y)**2 + (b.z - label.z)**2)
+
+
+def listen_on_connections(host, port, authkey, conn_threads, stop_event):
+    listener = Listener((host, port), authkey=authkey)
+    listener._listener._socket.settimeout(1.0)
     print(f"[SERVER] listening on {host}:{port}")
-    while not stop:
-        conn = listener.accept()
-        label = f'client {conn_id}'
-        conn_id += 1
-        new_t = threading.Thread(target=serve, args=(conn, label, stop, tracked))
-        conn_threads.append(new_t)
-    listener.close()
+
+    conn_id = 0
+    try:
+        while not stop_event.is_set():
+            try:
+                conn = listener.accept()
+            except socket.timeout:
+                continue
+            print(f"[SERVER] connection #{conn_id} established")
+            client_name = f"client {conn_id}"
+            t = threading.Thread(target=serve, args=(conn, client_name, stop_event))
+            t.start()
+            conn_threads.append(t)
+            conn_id += 1
+    finally:
+        listener.close()
+        print("[SERVER] listener closed")
 
 
-def serve(conn, label, stop, tracked):
-    while not stop:
-        message = conn.receive()
-        print('Received message from', label)
-        result = process(message)
-        conn.send(result)
-    conn.close()
+def serve(conn, client, stop_event):
+    print(f"[SERVER] started thread for {client}")
+    try:
+        while not stop_event.is_set():
+            try:
+                msg = conn.recv()
+            except (EOFError, OSError):
+                break
 
-
-def listen_for_messages(conn, label, recv_que, recv_lock, stop):
-    while not stop:
-        message = conn.recv()
-        print('Received messsage from', label)
-        recv_lock.acquire()
-        recv_que.append((message, label))
-        recv_lock.release()
-
-
-def send_messages(clients, send_que, send_lock, stop):
-    while not stop:
-        if len(send_que) == 0:
-            time.sleep(0.01)
-            continue
-        send_lock.acquire()
-        msg, client = send_que.pop()
-        send_lock.release()
-        clients[client].send(msg)
-        print(f'Sent message to {client}')
-
-
-def process(msg, tracked):
-    for b in tracked:
-        b.miss += 1
-
-    labels_out = []
-    for r_ball in msg.balls:
-        best = None
-        best_d = POS_THR
-        for i, t_ball in enumerate(tracked):
-            d = dist3(r_ball, t_ball)
-            if d < best_d:
-                best = i
-                best_d = d
-        if best:
-            label = tracked[best].label
-            tracked[best] = r_ball
-            labels_out.append((r_ball.index, label))
-        else:
-            # new ball
-            r_ball.label = next_free(tracked)
-            tracked.append(r_ball)
-            labels_out.append((r_ball.index, r_ball.label))
-    return labels_out
+            labels_map = label_balls(msg.balls, client)
+            conn.send(labels_map)
+    finally:
+        with labels_lock:
+            to_remove = []
+            for lab, lab_obj in labels.items():
+                lab_obj.remove_client(client)
+                if lab_obj.client_count() == 0:
+                    to_remove.append(lab)
+            for lab in to_remove:
+                labels.pop(lab)
+        conn.close()
+        print(f"[SERVER] thread for {client} stopped")
 
 
 def main():
@@ -106,21 +145,27 @@ def main():
     port = int(port)
     authkey = sys.argv[2].encode()
 
-    try:
-        stop = False
-        conn_threads = []
-        tracked = []
-        listener_t = threading.Thread(target=listen_on_connections, args=(host, port, authkey, conn_threads, stop, tracked))
-        listener_t.start()
+    stop_event = threading.Event()
+    conn_threads: list[threading.Thread] = []
 
+    listener_t = threading.Thread(
+        target=listen_on_connections,
+        args=(host, port, authkey, conn_threads, stop_event),
+        daemon=True
+    )
+    listener_t.start()
+
+    try:
         while True:
             time.sleep(0.5)
     except KeyboardInterrupt:
-        print("\nStopping...")
-        stop = True
+        print("\n[SERVER] shutting down...")
+        stop_event.set()
         listener_t.join()
         for t in conn_threads:
             t.join()
+        print("[SERVER] all threads stopped")
+
 
 if __name__ == "__main__":
     main()
