@@ -4,7 +4,7 @@ import cv2, sys, math, numpy as np
 
 DIST_COEF = 10
 F_PX = 500
-REAL_CM = 6.0
+REAL_CM = 6.5
 LOWER = np.array([20, 40, 80])
 UPPER = np.array([50, 255, 255])
 
@@ -42,10 +42,20 @@ def merge(rects):
 
 def find_balls_on_frame(frame, cr, sr, x_cam, y_cam, z_cam):
     balls = []
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+
+    blurred = cv2.GaussianBlur(frame, (11, 11), 0)
+
+    hsv = cv2.cvtColor(blurred, cv2.COLOR_BGR2HSV)
     mask = cv2.inRange(hsv, LOWER, UPPER)
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN,  kernel, iterations=2)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+
     cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     rects = merge([cv2.boundingRect(c) for c in cnts if cv2.contourArea(c) > 800])
+    cv2.imshow("Mask", cv2.resize(mask, None, fx=1.5, fy=1.5))
+    
     for x, y, w, h in rects:
         cx = x + w // 2
         cy = y + h // 2
@@ -59,10 +69,10 @@ def find_balls_on_frame(frame, cr, sr, x_cam, y_cam, z_cam):
         X_cam = (cx0 - cx) * scale
         Y_cam = (cy0 - cy) * scale
 
-        x = X_cam * cr + Z_cam * sr + x_cam
-        z = -X_cam * sr + Z_cam * cr + z_cam
-        y = Y_cam + y_cam
-        balls.append(Ball(cx, cy, w, h, x, y, z))
+        rx = X_cam * cr + Z_cam * sr + x_cam
+        rz = -X_cam * sr + Z_cam * cr + z_cam
+        ry = Y_cam + y_cam
+        balls.append(Ball(cx, cy, w, h, rx, ry, rz))
     return balls
 
 
