@@ -54,7 +54,7 @@ def find_balls_on_frame(frame, cr, sr, x_cam, y_cam, z_cam):
 
     cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     rects = merge([cv2.boundingRect(c) for c in cnts if cv2.contourArea(c) > 800])
-    cv2.imshow("Mask", cv2.resize(mask, None, fx=1.5, fy=1.5))
+    # cv2.imshow("Mask", cv2.resize(mask, None, fx=1.5, fy=1.5))
     
     for x, y, w, h in rects:
         cx = x + w // 2
