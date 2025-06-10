@@ -46,6 +46,8 @@ def label_balls(balls, client: str):
             closest_dist = MAX_LABEL_DIST
 
             for lab, lab_obj in labels.items():
+                if lab in matched:
+                    continue
                 d = dist3(ball, lab_obj)
                 if d < closest_dist:
                     closest_dist = d
