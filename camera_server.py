@@ -5,7 +5,6 @@ import math, sys, socket, time, threading
 MAX_LABEL_DIST = 20.0 
 START_L = ord('A')
 END_L = ord('Z')
-curr_label = ord('A')
 labels = dict()
 labels_lock = threading.Lock()
 
@@ -40,6 +39,7 @@ def label_balls(balls, client: str):
 
     with labels_lock:
         matched: set[str] = set()
+        new_labels = []
 
         for ball in balls:
             closest_label = None
@@ -53,6 +53,7 @@ def label_balls(balls, client: str):
                     closest_dist = d
                     closest_label = lab
 
+
             if closest_label is not None:
                 ind_labs[ball.index] = closest_label
                 label_obj = labels[closest_label]
@@ -60,10 +61,8 @@ def label_balls(balls, client: str):
                 label_obj.add_client(client)
                 matched.add(closest_label)
             else:
-                new_lab = next_free()
-                labels[new_lab] = Label(ball.x, ball.y, ball.z, client)
-                ind_labs[ball.index] = new_lab
-                matched.add(new_lab)
+                new_label = Label(ball.x, ball.y, ball.z, client)
+                new_labels.append((new_label, ball.index))
 
         to_delete = []
         for lab, lab_obj in labels.items():
@@ -75,16 +74,20 @@ def label_balls(balls, client: str):
         for lab in to_delete:
             labels.pop(lab)
 
+        for new_label, ind in new_labels:
+            new_lab = next_free()
+            labels[new_lab] = new_label
+            ind_labs[ball.index] = new_lab
+
     return ind_labs
 
 
 def next_free():
-    global curr_label
-    c = chr(curr_label)
-    curr_label += 1
-    if curr_label > END_L:
-        curr_label = START_L
-    return c
+    global labels
+    c = ord('A')
+    while chr(c) in labels.keys():
+        c += 1
+    return chr(c)
 
 
 def dist3(b, label):
