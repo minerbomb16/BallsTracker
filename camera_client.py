@@ -1,6 +1,7 @@
 from multiprocessing.connection import Client
 from shared_classes import Ball, Message
 import cv2, sys, math, numpy as np
+import threading, time
 
 DIST_COEF = 10
 F_PX = 500
@@ -8,15 +9,37 @@ REAL_CM = 6.5
 LOWER = np.array([20, 40, 80])
 UPPER = np.array([50, 255, 255])
 
-
 idx = 0
-
+pending_balls = None
+pending_lock  = threading.Lock()
+latest_labels = {}
+labels_lock = threading.Lock()
+stop_event = threading.Event()
 
 def new_idx():
     global idx
     idx += 1
     return idx
 
+def network_thread(conn):
+    global pending_balls, latest_labels
+    while not stop_event.is_set():
+        time.sleep(0.01)
+        with pending_lock:
+            balls_to_send = pending_balls
+        if balls_to_send is None:
+            continue
+
+        try:
+            conn.send(Message(balls_to_send))
+            labels = conn.recv()
+        except (EOFError, OSError, BrokenPipeError):
+            print("[WORKER] utracono połączenie, zatrzymuję sieć")
+            stop_event.set()
+            break
+
+        with labels_lock:
+            latest_labels = labels
 
 def merge(rects):
     merged = []
@@ -148,6 +171,7 @@ def get_cam_idx(max_index=10, backend=None):
 
 
 def main(host, port, authkey, x_cam, y_cam, z_cam, r):
+    global pending_balls
     cr, sr = math.cos(r), math.sin(r)
 
     cam_idx = get_cam_idx()
@@ -159,6 +183,8 @@ def main(host, port, authkey, x_cam, y_cam, z_cam, r):
     balls = []
 
     conn = Client((host, port), authkey=authkey)
+    net_t = threading.Thread(target=network_thread, args=(conn,), daemon=True)
+    net_t.start()
     print('Established connection')
 
     while True:
@@ -169,10 +195,17 @@ def main(host, port, authkey, x_cam, y_cam, z_cam, r):
 
         new_balls = find_balls_on_frame(frame, cr, sr, x_cam, y_cam, z_cam)
         balls = find_common_balls(balls, new_balls)
-        send_balls(balls, conn)
-        labels = receive_labels(conn)
+        with pending_lock:
+            pending_balls = list(balls)
+
+        with labels_lock:
+            labels = latest_labels.copy()
+
         draw_rects(frame, balls, labels)
         if cv2.waitKey(1) & 0xFF == 27:
+            stop_event.set()
+            net_t.join()
+            conn.close()
             break
 
 

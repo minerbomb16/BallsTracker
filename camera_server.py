@@ -2,7 +2,7 @@ from multiprocessing.connection import Listener
 from shared_classes import Ball, Message
 import math, sys, socket, time, threading
 
-MAX_LABEL_DIST = 15.0 
+MAX_LABEL_DIST = 20.0 
 START_L = ord('A')
 END_L = ord('Z')
 curr_label = ord('A')
