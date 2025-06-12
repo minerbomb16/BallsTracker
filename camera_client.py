@@ -34,7 +34,7 @@ def network_thread(conn):
             conn.send(Message(balls_to_send))
             labels = conn.recv()
         except (EOFError, OSError, BrokenPipeError):
-            print("[WORKER] utracono połączenie, zatrzymuję sieć")
+            print("[CLIENT] lost connection, exiting...")
             stop_event.set()
             break
 
@@ -77,7 +77,6 @@ def find_balls_on_frame(frame, cr, sr, x_cam, y_cam, z_cam):
 
     cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     rects = merge([cv2.boundingRect(c) for c in cnts if cv2.contourArea(c) > 800])
-    # cv2.imshow("Mask", cv2.resize(mask, None, fx=1.5, fy=1.5))
     
     for x, y, w, h in rects:
         cx = x + w // 2
@@ -120,23 +119,6 @@ def find_common_balls(prev_balls, new_balls):
             n_ball.index = new_idx()
         res.append(n_ball)
     return res
-
-
-def send_balls(balls, conn):
-    msg = Message(balls)
-    inds = [b.index for b in balls]
-    print(inds)
-    conn.send(msg)
-
-
-def receive_labels(conn):
-    try:
-        labels = conn.recv()
-    except EOFError:
-        print("[WORKER] Server closed connection, exiting...")
-        sys.exit(0)
-    print(labels)
-    return labels
 
 
 def draw_rects(frame, balls, labels):
@@ -202,7 +184,7 @@ def main(host, port, authkey, x_cam, y_cam, z_cam, r):
             labels = latest_labels.copy()
 
         draw_rects(frame, balls, labels)
-        if cv2.waitKey(1) & 0xFF == 27:
+        if cv2.waitKey(1) & 0xFF == 27 or stop_event.is_set():
             stop_event.set()
             net_t.join()
             conn.close()
@@ -211,7 +193,7 @@ def main(host, port, authkey, x_cam, y_cam, z_cam, r):
 
 if __name__ == "__main__":
     if len(sys.argv) < 7:
-        print("python worker.py host:port authkey x y z r")
+        print("python camera_client.py host:port authkey x y z r")
         exit(-1)
     host, port_str = sys.argv[1].split(':')
     port = int(port_str)

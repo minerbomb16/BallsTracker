@@ -53,7 +53,6 @@ def label_balls(balls, client: str):
                     closest_dist = d
                     closest_label = lab
 
-
             if closest_label is not None:
                 ind_labs[ball.index] = closest_label
                 label_obj = labels[closest_label]
@@ -143,7 +142,7 @@ def serve(conn, client, stop_event):
 
 def main():
     if len(sys.argv) < 3:
-        print("python server.py host:port authkey")
+        print("python camera_server.py host:port authkey")
         return
 
     host, port = sys.argv[1].split(':')
